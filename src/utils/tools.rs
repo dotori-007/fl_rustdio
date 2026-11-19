@@ -18,13 +18,16 @@ impl ToolPaths {
 
 #[cfg(target_os = "windows")]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(target_os = "windows")]
+pub const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x00004000;
 
-/// Windows 환경에서 Command 실행 시 콘솔/cmd 창 팝업 방지
+/// Windows 환경에서 Command 실행 시 콘솔/cmd 창 팝업 방지 및 백그라운드 우선순위 설정
+/// (FFmpeg CPU 점유율로 인한 실시간 오디오 재생 스트림 끊김 원천 방지)
 pub fn configure_no_window(cmd: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd.creation_flags(CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS);
     }
 }
 

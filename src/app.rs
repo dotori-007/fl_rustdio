@@ -121,7 +121,7 @@ impl Mp3EditorApp {
                     self.tab_editor.is_processing = false;
                     match res {
                         Ok(info) => {
-                            let _ = self.tab_editor.result_player.load_file(&info.file_path, info.duration);
+                            let _ = self.tab_editor.result_player.load_file_with_peaks(&info.file_path, info.duration, info.waveform_peaks.clone());
                             self.tab_editor.result_info = Some(info);
                             self.tab_editor.process_error = None;
                         }
@@ -135,7 +135,7 @@ impl Mp3EditorApp {
                     self.tab_extract.status_message = None;
                     match res {
                         Ok(info) => {
-                            let _ = self.tab_extract.player.load_file(&info.file_path, info.duration);
+                            let _ = self.tab_extract.player.load_file_with_peaks(&info.file_path, info.duration, info.waveform_peaks.clone());
                             // 추출 즉시 좌측 편집기로 자동 로드
                             self.tab_editor.load_file(info.file_path.clone(), &self.tools);
                             self.tab_extract.extracted_info = Some(info);
@@ -150,7 +150,7 @@ impl Mp3EditorApp {
                     self.tab_merge.is_merging = false;
                     match res {
                         Ok(info) => {
-                            let _ = self.tab_merge.result_player.load_file(&info.file_path, info.duration);
+                            let _ = self.tab_merge.result_player.load_file_with_peaks(&info.file_path, info.duration, info.waveform_peaks.clone());
                             self.tab_merge.result_info = Some(info);
                             self.tab_merge.error_message = None;
                         }

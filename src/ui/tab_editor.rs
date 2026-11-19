@@ -56,7 +56,7 @@ impl EditorTabState {
         if let Some(ref ffmpeg) = tools.ffmpeg {
             match probe_audio_info(&path, ffmpeg) {
                 Ok(info) => {
-                    let _ = self.source_player.load_file(&path, info.duration);
+                    let _ = self.source_player.load_file_with_peaks(&path, info.duration, info.waveform_peaks.clone());
                     self.source_info = Some(info);
                     self.process_error = None;
                     self.sync_realtime_dsp();

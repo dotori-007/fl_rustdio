@@ -109,6 +109,7 @@ pub struct AudioInfo {
     pub duration_formatted: String,
     pub bitrate: String,
     pub size_bytes: u64,
+    pub waveform_peaks: Vec<f32>,
     #[allow(dead_code)]
     pub title: Option<String>,
 }
@@ -192,6 +193,8 @@ pub fn probe_audio_info(file_path: &Path, ffmpeg_path: &Path) -> Result<AudioInf
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| "audio".to_string());
 
+    let waveform_peaks = crate::audio::player::extract_waveform_peaks(file_path, 220);
+
     Ok(AudioInfo {
         file_path: file_path.to_path_buf(),
         filename,
@@ -199,6 +202,7 @@ pub fn probe_audio_info(file_path: &Path, ffmpeg_path: &Path) -> Result<AudioInf
         duration_formatted: format_duration(duration),
         bitrate,
         size_bytes,
+        waveform_peaks,
         title: None,
     })
 }
@@ -219,6 +223,9 @@ pub fn process_audio(
 
     let mut audio_filters = Vec::new();
 
+    // 0. 입력 포맷 표준화 (샘플 레이트 불일치로 인한 오디오 끊김/깨짐 방지)
+    audio_filters.push("aformat=sample_rates=44100:channel_layouts=stereo".to_string());
+
     // 1. 속도 & 피치 (바이닐 연동 모드 vs 독립 조절 모드)
     if params.vinyl_link {
         // 바이닐/테이프 가속 리샘플링: 속도와 피치가 정비례하여 자연스럽게 함께 올라감
@@ -228,19 +235,23 @@ pub fn process_audio(
         audio_filters.push(format!("asetrate={target_rate}"));
         audio_filters.push(format!("aresample={sample_rate}"));
     } else {
-        // 독립 피치 시프트
-        if params.pitch_semitones.abs() > 0.01 {
+        // 독립 피치 & 템포 조절
+        let has_pitch = params.pitch_semitones.abs() > 0.01;
+        let has_speed = (params.speed - 1.0).abs() > 0.01;
+
+        if has_pitch {
             let pitch_ratio = 2.0f64.powf((params.pitch_semitones / 12.0) as f64);
             let sample_rate = 44100;
             let target_rate = (sample_rate as f64 * pitch_ratio).round() as u32;
             audio_filters.push(format!("asetrate={target_rate}"));
             audio_filters.push(format!("aresample={sample_rate}"));
-            let compensatory_speed = (1.0 / pitch_ratio) as f32;
-            audio_filters.extend(build_speed_filters(compensatory_speed));
-        }
 
-        // 독립 템포 조절
-        if (params.speed - 1.0).abs() > 0.01 {
+            // 피치 보상 배속과 사용자 지정 배속을 단일 atempo 필터 체인으로 통합!
+            // (중복 atempo 직렬 연결 시 발생하는 위상 상쇄 및 틱/스트림 끊김 현상 100% 방지)
+            let compensatory_speed = (1.0 / pitch_ratio) as f32;
+            let net_speed = (compensatory_speed * params.speed).clamp(0.25, 4.0);
+            audio_filters.extend(build_speed_filters(net_speed));
+        } else if has_speed {
             audio_filters.extend(build_speed_filters(params.speed));
         }
     }
@@ -255,14 +266,18 @@ pub fn process_audio(
         audio_filters.push(format!("treble=g={:.1}:f=8000:w=0.5", params.treble_gain_db));
     }
 
-    // 4. 공간감 리버브 (Dreamy Reverb / Ambience)
+    // 4. 공간감 리버브 (안전한 게인 밸런싱)
     if params.reverb_pct > 1.0 {
-        let decay = (params.reverb_pct / 100.0 * 0.6).clamp(0.05, 0.55);
-        audio_filters.push(format!("aecho=0.8:0.88:40:{:.2}", decay));
+        let decay = (params.reverb_pct / 100.0 * 0.45).clamp(0.05, 0.45);
+        audio_filters.push(format!("aecho=0.8:0.55:40:{:.2}", decay));
     }
+
+    // 5. 마스터 True Peak 리미터 필수 탑재 (오버슈트 클리핑 및 디지털 스트림 깨짐 완전 차단)
+    audio_filters.push("alimiter=limit=0.95:attack=5:release=50:asc=1".to_string());
 
     let mut cmd = Command::new(ffmpeg_path);
     configure_no_window(&mut cmd);
+    cmd.arg("-threads").arg("4"); // 백그라운드 스레드 제한으로 실시간 오디오 버퍼 보장
     cmd.arg("-y").arg("-i").arg(input_path);
 
     if !audio_filters.is_empty() {
@@ -314,6 +329,7 @@ pub fn merge_audio_files(
 
     let mut cmd = Command::new(ffmpeg_path);
     configure_no_window(&mut cmd);
+    cmd.arg("-threads").arg("4");
     cmd.arg("-y");
 
     for p in input_paths {

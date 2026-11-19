@@ -78,7 +78,12 @@ impl AudioPlayer {
         }
     }
 
+    #[allow(dead_code)]
     pub fn load_file(&mut self, path: &Path, known_duration_secs: f64) -> Result<(), String> {
+        self.load_file_with_peaks(path, known_duration_secs, Vec::new())
+    }
+
+    pub fn load_file_with_peaks(&mut self, path: &Path, known_duration_secs: f64, peaks: Vec<f32>) -> Result<(), String> {
         self.stop();
 
         if let Some(ref handle) = self.stream_handle {
@@ -91,8 +96,12 @@ impl AudioPlayer {
             self.playback_start = None;
             self.is_playing = false;
 
-            // 오디오 전체 파형 피크 데이터 추출 (220개 버킷)
-            self.waveform_peaks = extract_waveform_peaks(path, 220);
+            // 이미 워커 스레드에서 추출된 피크를 즉시 대입 (메인 스레드 블로킹 및 오디오 끊김 방지)
+            if !peaks.is_empty() {
+                self.waveform_peaks = peaks;
+            } else {
+                self.waveform_peaks = extract_waveform_peaks(path, 220);
+            }
 
             Ok(())
         } else {
