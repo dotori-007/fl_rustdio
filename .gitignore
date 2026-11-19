@@ -1,0 +1,10 @@
+/target
+uploads/
+outputs/
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+*.aac
+

@@ -1,0 +1,13 @@
+[package]
+name = "fl_rustdio"
+version = "0.2.0"
+edition = "2021"
+description = "FL Studio & Edison style Pure Rust Audio Studio with real-time DSP, SoundCloud-style interactive waveform, and web audio extractor."
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+rodio = { version = "0.19", default-features = false, features = ["symphonia-all"] }
+rfd = "0.15"
+crossbeam-channel = "0.5"
+uuid = { version = "1.10", features = ["v4"] }
