@@ -1,4 +1,4 @@
-// FL Rustdio - Pure Rust Native Audio Studio
+// PureRust MP3 Editor Studio - Pure Rust Native Application
 // Windows GUI Subsystem (콘솔창 숨기기 옵션 지원)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -21,7 +21,7 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("FL Rustdio - PureRust Audio Studio")
+            .with_title("PureRust MP3 Editor Studio")
             .with_inner_size([960.0, 710.0])
             .with_min_inner_size([800.0, 560.0])
             .with_drag_and_drop(true),
@@ -29,7 +29,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "FL Rustdio",
+        "PureRust MP3 Editor Studio",
         native_options,
         Box::new(|cc| {
             // 한글 폰트 및 다크 오디오 스튜디오 테마 초기화

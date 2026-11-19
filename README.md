@@ -1,4 +1,4 @@
-# 🎵 FL Rustdio (fl_rustdio)
+# 🎵 PureRust MP3 Editor Studio (rust_mp3_editor)
 
 > **Pure Rust 기반 초경량·고성능 네이티브 오디오 스튜디오 & 나이트코어(Nightcore)/로리코어(Lolicore) DSP 프로세서**  
 > 웹 브라우저나 무거운 런타임 없이 단일 네이티브 실행 파일(`.exe`, ~7.3MB)로 구동되며, 60FPS 하드웨어 가속 다크 스튜디오 UI, 실시간 무지연 오디오 DSP 이펙터, 사운드클라우드 스타일 대화형 음 파형 타임라인, 온라인 음원 고속 추출기를 탑재한 차세대 오디오 워크스테이션입니다.
@@ -80,7 +80,7 @@
 순수 Rust 네이티브 구조로 외부 종속성을 최소화하여 가볍고 견고하게 동작합니다:
 
 ```
-fl_rustdio/
+rust_mp3_editor/
 ├── Cargo.toml                 # Rust 패키지 설정 및 의존성
 ├── run.bat                    # 원클릭 데스크톱 앱 실행 스크립트
 ├── README.md                  # 프로젝트 안내서
@@ -119,8 +119,8 @@ fl_rustdio/
 ### 실행 방법
 ```powershell
 # 레포지토리 클론
-git clone https://github.com/dotori-007/fl_rustdio.git
-cd fl_rustdio
+git clone https://github.com/dotori-007/rust_mp3_editor.git
+cd rust_mp3_editor
 
 # 원클릭 실행 (run.bat 더블 클릭 또는 콘솔 실행)
 .\run.bat

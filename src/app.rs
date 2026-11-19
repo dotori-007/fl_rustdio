@@ -233,7 +233,7 @@ impl eframe::App for Mp3EditorApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // 앱 타이틀 & 아이콘 (Windows 표준 호환 폰트 글리프 적용)
-                    ui.label(RichText::new("🎵 FL Rustdio").size(16.5).strong().color(COLOR_ACCENT_CYAN));
+                    ui.label(RichText::new("🎵 PureRust Audio Studio").size(16.5).strong().color(COLOR_ACCENT_CYAN));
                     ui.add_space(16.0);
 
                     // 세그먼트 스타일 네비게이션 탭

@@ -1,8 +1,8 @@
 [package]
-name = "fl_rustdio"
+name = "rust_mp3_editor"
 version = "0.2.0"
 edition = "2021"
-description = "FL Studio & Edison style Pure Rust Audio Studio with real-time DSP, SoundCloud-style interactive waveform, and web audio extractor."
+description = "Pure Rust Native Audio Studio with real-time DSP, SoundCloud-style interactive waveform, and web audio extractor."
 
 [dependencies]
 eframe = "0.29"
