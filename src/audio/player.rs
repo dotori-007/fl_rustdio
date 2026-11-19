@@ -57,7 +57,7 @@ impl AudioPlayer {
         let old_speed = self.dsp_params.lock().map(|p| p.speed).unwrap_or(1.0);
         let new_speed = params.speed.clamp(0.25, 4.0);
 
-        if (old_speed - new_speed).abs() > 0.001 && self.is_playing {
+        if (old_speed - new_speed).abs() > 0.005 && self.is_playing {
             // 속도가 변경될 때 기존 배속으로 누적 재생 시간 정산
             if let Some(start) = self.playback_start.take() {
                 self.accumulated_time += start.elapsed().mul_f32(old_speed);
@@ -69,8 +69,12 @@ impl AudioPlayer {
             *p = params.clone();
             p.volume = self.volume;
         }
-        if let Some(ref sink) = self.sink {
-            sink.set_speed(new_speed);
+
+        // 속도가 실제로 달라졌을 때만 Sink::set_speed 호출 (불필요한 락 경합 및 오디오 언더런 방지)
+        if (old_speed - new_speed).abs() > 0.005 {
+            if let Some(ref sink) = self.sink {
+                sink.set_speed(new_speed);
+            }
         }
     }
 

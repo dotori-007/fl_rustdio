@@ -129,35 +129,64 @@ impl DualDelayPitchShifter {
     }
 
     pub fn process(&mut self, input: f32, semitones: f32) -> f32 {
-        if semitones.abs() < 0.05 {
+        let input = if input.is_finite() { input } else { 0.0 };
+        let buf_len = self.buffer.len();
+        if buf_len < 2 {
             return input;
         }
 
-        let buf_len = self.buffer.len();
-        self.buffer[self.write_idx] = input;
+        // 항상 입력 샘플을 순환 버퍼에 지속 기록하여 부드러운 오디오 스트림 유지
+        let cur_write = self.write_idx;
+        self.buffer[cur_write] = input;
+        self.write_idx = (cur_write + 1) % buf_len;
+
+        // 피치 변화가 없을 때는 원본 샘플 반환 (무손실 패스스루)
+        if semitones.abs() < 0.02 || !semitones.is_finite() {
+            return input;
+        }
 
         // 반음에 따른 피치 레이트: rate = 1 - 2^(semitones / 12)
-        let rate = 1.0 - 2.0_f32.powf(semitones / 12.0);
+        let semitones_clamped = semitones.clamp(-24.0, 24.0);
+        let rate = 1.0 - 2.0_f32.powf(semitones_clamped / 12.0);
         let delta = rate / self.window_size;
 
         self.phase1 = (self.phase1 + delta).rem_euclid(1.0);
         self.phase2 = (self.phase2 + delta).rem_euclid(1.0);
 
-        // 딜레이 오프셋
-        let delay1 = self.phase1 * self.window_size;
-        let delay2 = self.phase2 * self.window_size;
+        if !self.phase1.is_finite() { self.phase1 = 0.0; }
+        if !self.phase2.is_finite() { self.phase2 = 0.5; }
 
-        let read_idx1 = (self.write_idx as f32 - delay1).rem_euclid(buf_len as f32) as usize;
-        let read_idx2 = (self.write_idx as f32 - delay2).rem_euclid(buf_len as f32) as usize;
+        // 딜레이 오프셋 (샘플 단위, 안전한 범위로 클램프)
+        let max_safe_delay = (buf_len - 2) as f32;
+        let delay1 = (self.phase1 * self.window_size).clamp(0.0, max_safe_delay);
+        let delay2 = (self.phase2 * self.window_size).clamp(0.0, max_safe_delay);
 
-        // 크로스페이드 삼각/코사인 가중치
+        // 100% 패닉 방지: 정수 모듈로 + 선형 보간 안전 읽기
+        let sample1 = self.read_interpolated(cur_write, delay1, buf_len);
+        let sample2 = self.read_interpolated(cur_write, delay2, buf_len);
+
+        // 부드러운 해닝(Hanning) 크로스페이드 가중치
         let w1 = 0.5 * (1.0 - (2.0 * PI * self.phase1).cos());
         let w2 = 0.5 * (1.0 - (2.0 * PI * self.phase2).cos());
 
-        let out = self.buffer[read_idx1] * w1 + self.buffer[read_idx2] * w2;
-        self.write_idx = (self.write_idx + 1) % buf_len;
+        let out = sample1 * w1 + sample2 * w2;
+        if out.is_finite() {
+            out
+        } else {
+            input
+        }
+    }
 
-        out
+    #[inline(always)]
+    fn read_interpolated(&self, write_pos: usize, delay: f32, buf_len: usize) -> f32 {
+        let delay_int = delay.floor() as usize;
+        let frac = delay - delay.floor();
+
+        // write_pos에서 delay_int만큼 과거의 인덱스 (정수 모듈로 연산으로 범위 초과 원천 차단)
+        let idx0 = (write_pos + buf_len - (delay_int % buf_len)) % buf_len;
+        let idx1 = (idx0 + buf_len - 1) % buf_len;
+
+        self.buffer[idx0] * (1.0 - frac) + self.buffer[idx1] * frac
     }
 }
 #[derive(Clone, Copy, Default)]
@@ -242,9 +271,18 @@ impl BiquadFilter {
 
     #[inline(always)]
     pub fn process(&mut self, x: f32) -> f32 {
+        let x = if x.is_finite() { x } else { 0.0 };
         let y = self.b0 * x + self.s1;
         self.s1 = self.b1 * x - self.a1 * y + self.s2;
         self.s2 = self.b2 * x - self.a2 * y;
+
+        // 발산 방지 및 비정상 수치(NaN, Inf) 방어
+        if !y.is_finite() || !self.s1.is_finite() || !self.s2.is_finite() {
+            self.s1 = 0.0;
+            self.s2 = 0.0;
+            return x;
+        }
+
         y
     }
 }
@@ -290,6 +328,7 @@ impl SimpleReverb {
         if wet_pct <= 0.001 {
             return input;
         }
+        let input = if input.is_finite() { input } else { 0.0 };
 
         let wet = (wet_pct / 100.0 * 0.45).clamp(0.0, 0.5);
         let dry = 1.0 - wet * 0.5;
@@ -300,7 +339,8 @@ impl SimpleReverb {
             let buf = &mut self.comb_buffers[i];
             let idx = self.comb_indices[i];
             let out = buf[idx];
-            buf[idx] = input + out * self.comb_gains[i];
+            let next_val = input + out * self.comb_gains[i];
+            buf[idx] = if next_val.is_finite() { next_val } else { 0.0 };
             self.comb_indices[i] = (idx + 1) % buf.len();
             comb_sum += out;
         }
@@ -314,14 +354,19 @@ impl SimpleReverb {
             let idx = self.allpass_indices[i];
             let delayed = buf[idx];
             let out = -ap_gain * ap_out + delayed;
-            buf[idx] = ap_out + ap_gain * delayed;
+            let next_buf = ap_out + ap_gain * delayed;
+            buf[idx] = if next_buf.is_finite() { next_buf } else { 0.0 };
             self.allpass_indices[i] = (idx + 1) % buf.len();
             ap_out = out;
         }
 
         // Dry / Wet 결합 및 소프트 리미팅
         let mixed = dry * input + wet * ap_out;
-        mixed.clamp(-1.0, 1.0)
+        if mixed.is_finite() {
+            mixed.clamp(-1.0, 1.0)
+        } else {
+            input
+        }
     }
 }
 
@@ -332,6 +377,9 @@ pub struct DspSource<I> {
     visualizer: Arc<Mutex<VisualizerState>>,
     sample_rate: u32,
     channels: u16,
+
+    // 안정적인 캐시 파라미터 (락 경합 시 기본값 리셋 버그 원천 차단)
+    cached_params: DspParams,
 
     // DSP 필터 인스턴스 (채널별)
     pitch_shifters: Vec<DualDelayPitchShifter>,
@@ -356,6 +404,8 @@ where
         let sample_rate = source.sample_rate();
         let channels = source.channels();
         let ch_count = channels as usize;
+
+        let cached_params = params.lock().map(|p| p.clone()).unwrap_or_default();
 
         let mut pitch_shifters = Vec::with_capacity(ch_count);
         let mut bass_filters = Vec::with_capacity(ch_count);
@@ -382,6 +432,7 @@ where
             visualizer,
             sample_rate,
             channels,
+            cached_params,
             pitch_shifters,
             bass_filters,
             treble_filters,
@@ -405,21 +456,28 @@ where
         let ch = self.current_channel;
         self.current_channel = (self.current_channel + 1) % (self.channels as usize);
 
-        // 파라미터 확인 및 필터 업데이트
-        let (speed, pitch_semi, vinyl, bass_gain, treble_gain, reverb_pct, vol) = if let Ok(p) = self.params.try_lock() {
-            (p.speed, p.pitch_semitones, p.vinyl_link, p.bass_gain_db, p.treble_gain_db, p.reverb_pct, p.volume)
-        } else {
-            (1.0, 0.0, false, self.last_bass_gain, self.last_treble_gain, 0.0, 1.0)
-        };
+        // [중요 수정]: try_lock 성공 시에만 캐시를 갱신하고, 실패 시 기존 cached_params를 그대로 유지!
+        // 슬라이더 조작 시 락 경합으로 인해 1.0배속 / 0반음으로 튕겨나가는 버그를 완벽하게 차단!
+        if let Ok(p) = self.params.try_lock() {
+            self.cached_params = p.clone();
+        }
 
-        if (bass_gain - self.last_bass_gain).abs() > 0.1 {
+        let speed = self.cached_params.speed;
+        let pitch_semi = self.cached_params.pitch_semitones;
+        let vinyl = self.cached_params.vinyl_link;
+        let bass_gain = self.cached_params.bass_gain_db;
+        let treble_gain = self.cached_params.treble_gain_db;
+        let reverb_pct = self.cached_params.reverb_pct;
+        let vol = self.cached_params.volume;
+
+        if (bass_gain - self.last_bass_gain).abs() > 0.05 {
             self.last_bass_gain = bass_gain;
             for bf in self.bass_filters.iter_mut() {
                 bf.set_low_shelf(self.sample_rate as f32, 160.0, bass_gain);
             }
         }
 
-        if (treble_gain - self.last_treble_gain).abs() > 0.1 {
+        if (treble_gain - self.last_treble_gain).abs() > 0.05 {
             self.last_treble_gain = treble_gain;
             for tf in self.treble_filters.iter_mut() {
                 tf.set_high_shelf(self.sample_rate as f32, 7000.0, treble_gain);
@@ -438,11 +496,8 @@ where
             pitch_semi - speed_pitch_offset
         };
 
-        let mut sample = if target_pitch.abs() > 0.02 {
-            self.pitch_shifters[ch].process(raw_sample, target_pitch)
-        } else {
-            raw_sample
-        };
+        // 안전 보간 피치 시프터 적용
+        let mut sample = self.pitch_shifters[ch].process(raw_sample, target_pitch);
 
         // 2. 베이스 부스트 필터 적용
         sample = self.bass_filters[ch].process(sample);
@@ -453,17 +508,21 @@ where
         // 4. 리버브 필터 적용
         sample = self.reverbs[ch].process(sample, reverb_pct);
 
-        // 5. 볼륨 조절
-        sample = (sample * vol).clamp(-1.0, 1.0);
+        // 5. 볼륨 조절 및 최종 샘플 안전 리미팅
+        let final_sample = if sample.is_finite() {
+            (sample * vol).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
 
-        // 5. 비주얼라이저 버퍼에 첫 번째 채널 샘플 전송
+        // 6. 비주얼라이저 버퍼에 첫 번째 채널 샘플 전송
         if ch == 0 {
             if let Ok(mut viz) = self.visualizer.try_lock() {
-                viz.push_sample(sample);
+                viz.push_sample(final_sample);
             }
         }
 
-        Some(sample)
+        Some(final_sample)
     }
 }
 
