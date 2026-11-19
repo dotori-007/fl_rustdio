@@ -125,7 +125,9 @@ impl AudioPlayer {
 
             if sink.empty() {
                 let file = File::open(&file_path).map_err(|e| format!("파일 열기 실패: {e}"))?;
-                let source = Decoder::new(BufReader::new(file)).map_err(|e| format!("오디오 디코딩 실패: {e}"))?;
+                // 256KB 대용량 선행 버퍼로 디스크 I/O 렉 및 오디오 스트림 언더런 방지
+                let reader = BufReader::with_capacity(256 * 1024, file);
+                let source = Decoder::new(reader).map_err(|e| format!("오디오 디코딩 실패: {e}"))?;
                 let f32_source = source.convert_samples::<f32>();
                 let dsp_source = DspSource::new(f32_source, self.dsp_params.clone(), self.visualizer.clone());
                 sink.append(dsp_source);
@@ -232,7 +234,8 @@ impl AudioPlayer {
             sink.set_volume(self.volume);
 
             let file = File::open(&file_path).map_err(|e| format!("파일 열기 실패: {e}"))?;
-            let source = Decoder::new(BufReader::new(file)).map_err(|e| format!("오디오 디코딩 실패: {e}"))?;
+            let reader = BufReader::with_capacity(256 * 1024, file);
+            let source = Decoder::new(reader).map_err(|e| format!("오디오 디코딩 실패: {e}"))?;
 
             let skipped = source.skip_duration(target_pos);
             let f32_source = skipped.convert_samples::<f32>();
@@ -264,7 +267,7 @@ pub fn extract_waveform_peaks(path: &Path, num_peaks: usize) -> Vec<f32> {
         Ok(f) => f,
         Err(_) => return Vec::new(),
     };
-    let reader = BufReader::new(file);
+    let reader = BufReader::with_capacity(128 * 1024, file);
     let decoder = match Decoder::new(reader) {
         Ok(d) => d,
         Err(_) => return Vec::new(),

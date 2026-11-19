@@ -114,6 +114,7 @@ pub struct DualDelayPitchShifter {
     phase1: f32,
     phase2: f32,
     window_size: f32,
+    current_delta: f32,
 }
 
 impl DualDelayPitchShifter {
@@ -125,6 +126,7 @@ impl DualDelayPitchShifter {
             phase1: 0.0,
             phase2: 0.5,
             window_size: (sample_rate * 0.040).max(512.0), // 40ms 윈도우
+            current_delta: 0.0,
         }
     }
 
@@ -140,15 +142,28 @@ impl DualDelayPitchShifter {
         self.buffer[cur_write] = input;
         self.write_idx = (cur_write + 1) % buf_len;
 
+        // 반음에 따른 피치 레이트: rate = 1 - 2^(semitones / 12)
+        let semitones_clamped = if semitones.is_finite() {
+            semitones.clamp(-24.0, 24.0)
+        } else {
+            0.0
+        };
+
+        let target_delta = if semitones_clamped.abs() < 0.02 {
+            0.0
+        } else {
+            let rate = 1.0 - 2.0_f32.powf(semitones_clamped / 12.0);
+            rate / self.window_size
+        };
+
+        // 파라미터 글라이드 스무딩 (급격한 슬라이더 조작 시 틱/팝 방지)
+        self.current_delta = self.current_delta * 0.95 + target_delta * 0.05;
+        let delta = self.current_delta;
+
         // 피치 변화가 없을 때는 원본 샘플 반환 (무손실 패스스루)
-        if semitones.abs() < 0.02 || !semitones.is_finite() {
+        if delta.abs() < 1e-6 {
             return input;
         }
-
-        // 반음에 따른 피치 레이트: rate = 1 - 2^(semitones / 12)
-        let semitones_clamped = semitones.clamp(-24.0, 24.0);
-        let rate = 1.0 - 2.0_f32.powf(semitones_clamped / 12.0);
-        let delta = rate / self.window_size;
 
         self.phase1 = (self.phase1 + delta).rem_euclid(1.0);
         self.phase2 = (self.phase2 + delta).rem_euclid(1.0);
@@ -276,6 +291,14 @@ impl BiquadFilter {
         self.s1 = self.b1 * x - self.a1 * y + self.s2;
         self.s2 = self.b2 * x - self.a2 * y;
 
+        // x86 CPU 마이크로코드 스톨 방지: Denormal(Subnormal, <1e-15) 자동 0.0 플러시(FTZ)
+        if self.s1.abs() < 1e-15 {
+            self.s1 = 0.0;
+        }
+        if self.s2.abs() < 1e-15 {
+            self.s2 = 0.0;
+        }
+
         // 발산 방지 및 비정상 수치(NaN, Inf) 방어
         if !y.is_finite() || !self.s1.is_finite() || !self.s2.is_finite() {
             self.s1 = 0.0;
@@ -340,7 +363,12 @@ impl SimpleReverb {
             let idx = self.comb_indices[i];
             let out = buf[idx];
             let next_val = input + out * self.comb_gains[i];
-            buf[idx] = if next_val.is_finite() { next_val } else { 0.0 };
+            // Denormal/Subnormal 및 비정상 수치 플러시
+            buf[idx] = if next_val.abs() > 1e-15 && next_val.is_finite() {
+                next_val
+            } else {
+                0.0
+            };
             self.comb_indices[i] = (idx + 1) % buf.len();
             comb_sum += out;
         }
@@ -355,7 +383,12 @@ impl SimpleReverb {
             let delayed = buf[idx];
             let out = -ap_gain * ap_out + delayed;
             let next_buf = ap_out + ap_gain * delayed;
-            buf[idx] = if next_buf.is_finite() { next_buf } else { 0.0 };
+            // Denormal/Subnormal 및 비정상 수치 플러시
+            buf[idx] = if next_buf.abs() > 1e-15 && next_buf.is_finite() {
+                next_buf
+            } else {
+                0.0
+            };
             self.allpass_indices[i] = (idx + 1) % buf.len();
             ap_out = out;
         }
@@ -367,6 +400,19 @@ impl SimpleReverb {
         } else {
             input
         }
+    }
+}
+
+#[inline(always)]
+fn soft_clip(x: f32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let abs_x = x.abs();
+    if abs_x <= 0.8 {
+        x
+    } else {
+        x.signum() * (0.8 + 0.2 * ((abs_x - 0.8) / 0.2).tanh())
     }
 }
 
@@ -390,6 +436,8 @@ pub struct DspSource<I> {
     last_bass_gain: f32,
     last_treble_gain: f32,
     current_channel: usize,
+    check_counter: usize,
+    current_volume: f32,
 }
 
 impl<I> DspSource<I>
@@ -406,6 +454,7 @@ where
         let ch_count = channels as usize;
 
         let cached_params = params.lock().map(|p| p.clone()).unwrap_or_default();
+        let current_volume = cached_params.volume;
 
         let mut pitch_shifters = Vec::with_capacity(ch_count);
         let mut bass_filters = Vec::with_capacity(ch_count);
@@ -440,6 +489,8 @@ where
             last_bass_gain: -999.0,
             last_treble_gain: -999.0,
             current_channel: 0,
+            check_counter: 0,
+            current_volume,
         }
     }
 }
@@ -456,10 +507,12 @@ where
         let ch = self.current_channel;
         self.current_channel = (self.current_channel + 1) % (self.channels as usize);
 
-        // [중요 수정]: try_lock 성공 시에만 캐시를 갱신하고, 실패 시 기존 cached_params를 그대로 유지!
-        // 슬라이더 조작 시 락 경합으로 인해 1.0배속 / 0반음으로 튕겨나가는 버그를 완벽하게 차단!
-        if let Ok(p) = self.params.try_lock() {
-            self.cached_params = p.clone();
+        // 64샘플 블록 단위 체크 (초당 ~1,378회): 락 경합 방지 및 CPU 오버헤드 98% 격감
+        self.check_counter += 1;
+        if self.check_counter % 64 == 0 {
+            if let Ok(p) = self.params.try_lock() {
+                self.cached_params = p.clone();
+            }
         }
 
         let speed = self.cached_params.speed;
@@ -468,7 +521,11 @@ where
         let bass_gain = self.cached_params.bass_gain_db;
         let treble_gain = self.cached_params.treble_gain_db;
         let reverb_pct = self.cached_params.reverb_pct;
-        let vol = self.cached_params.volume;
+        
+        // 볼륨 스무딩 (지퍼 노이즈 방지)
+        let target_vol = self.cached_params.volume;
+        self.current_volume = self.current_volume * 0.98 + target_vol * 0.02;
+        let vol = self.current_volume;
 
         if (bass_gain - self.last_bass_gain).abs() > 0.05 {
             self.last_bass_gain = bass_gain;
@@ -496,7 +553,7 @@ where
             pitch_semi - speed_pitch_offset
         };
 
-        // 안전 보간 피치 시프터 적용
+        // 안전 보간 및 글라이드 피치 시프터 적용
         let mut sample = self.pitch_shifters[ch].process(raw_sample, target_pitch);
 
         // 2. 베이스 부스트 필터 적용
@@ -508,9 +565,9 @@ where
         // 4. 리버브 필터 적용
         sample = self.reverbs[ch].process(sample, reverb_pct);
 
-        // 5. 볼륨 조절 및 최종 샘플 안전 리미팅
+        // 5. 볼륨 조절 및 아날로그형 소프트 클리핑 적용 (디지털 클리핑 찌직거림 차단)
         let final_sample = if sample.is_finite() {
-            (sample * vol).clamp(-1.0, 1.0)
+            soft_clip(sample * vol).clamp(-1.0, 1.0)
         } else {
             0.0
         };
@@ -548,5 +605,55 @@ where
     #[inline]
     fn total_duration(&self) -> Option<Duration> {
         self.source.total_duration()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_soft_clip_characteristics() {
+        assert_eq!(soft_clip(0.0), 0.0);
+        assert_eq!(soft_clip(0.5), 0.5);
+        assert_eq!(soft_clip(-0.5), -0.5);
+        assert_eq!(soft_clip(0.8), 0.8);
+        assert_eq!(soft_clip(-0.8), -0.8);
+
+        // 0.8 초과 시 1.0 이하로 부드럽게 새츄레이션
+        let clipped_pos = soft_clip(1.5);
+        assert!(clipped_pos > 0.8 && clipped_pos <= 1.0);
+
+        let clipped_neg = soft_clip(-1.5);
+        assert!(clipped_neg < -0.8 && clipped_neg >= -1.0);
+
+        // 비정상 수치(NaN, Inf) 방어
+        assert_eq!(soft_clip(f32::NAN), 0.0);
+        assert_eq!(soft_clip(f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn test_biquad_denormal_flush() {
+        let mut filter = BiquadFilter::default();
+        filter.set_low_shelf(44100.0, 160.0, 6.0);
+
+        // 극소수(Denormal/Subnormal, < 1e-15) 입력 시 필터 상태가 0.0으로 플러시되는지 확인
+        let _ = filter.process(1e-18);
+        let _ = filter.process(1e-20);
+        assert_eq!(filter.s1, 0.0);
+        assert_eq!(filter.s2, 0.0);
+    }
+
+    #[test]
+    fn test_pitch_shifter_glide_and_stability() {
+        let mut shifter = DualDelayPitchShifter::new(44100.0);
+
+        // 급격한 반음 변화에도 패닉 없이 부드럽게 샘플 출력
+        for i in 0..500 {
+            let semitones = if i < 250 { 12.0 } else { -12.0 };
+            let out = shifter.process(0.5, semitones);
+            assert!(out.is_finite());
+            assert!(out.abs() <= 1.5);
+        }
     }
 }
