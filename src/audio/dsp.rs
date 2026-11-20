@@ -3,9 +3,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use rodio::Source;
 
-pub const SPECTRUM_BANDS_COUNT: usize = 32;
-pub const WAVEFORM_BUFFER_SIZE: usize = 512;
-
 /// 실시간 DSP 이펙터 파라미터 (스레드 간 공유)
 #[derive(Clone, Debug)]
 pub struct DspParams {
@@ -29,81 +26,6 @@ impl Default for DspParams {
             reverb_pct: 0.0,
             volume: 1.0,
         }
-    }
-}
-
-/// 실시간 오디오 비주얼라이저 상태 (UI 렌더링용)
-pub struct VisualizerState {
-    pub waveform: [f32; WAVEFORM_BUFFER_SIZE],
-    pub waveform_idx: usize,
-    pub spectrum_bars: [f32; SPECTRUM_BANDS_COUNT],
-    pub peak_caps: [f32; SPECTRUM_BANDS_COUNT],
-    pub rms_level: f32,
-    pub is_active: bool,
-    energy_accum: [f32; SPECTRUM_BANDS_COUNT],
-    sample_counter: usize,
-}
-
-impl Default for VisualizerState {
-    fn default() -> Self {
-        Self {
-            waveform: [0.0; WAVEFORM_BUFFER_SIZE],
-            waveform_idx: 0,
-            spectrum_bars: [0.0; SPECTRUM_BANDS_COUNT],
-            peak_caps: [0.0; SPECTRUM_BANDS_COUNT],
-            rms_level: 0.0,
-            is_active: false,
-            energy_accum: [0.0; SPECTRUM_BANDS_COUNT],
-            sample_counter: 0,
-        }
-    }
-}
-
-impl VisualizerState {
-    pub fn push_sample(&mut self, sample: f32) {
-        self.waveform[self.waveform_idx] = sample;
-        self.waveform_idx = (self.waveform_idx + 1) % WAVEFORM_BUFFER_SIZE;
-        self.is_active = true;
-
-        // 초경량 필터 뱅크 누적 (주파수 대역 추정)
-        let abs_val = sample.abs();
-        let idx = self.sample_counter % SPECTRUM_BANDS_COUNT;
-        self.energy_accum[idx] += abs_val;
-        self.sample_counter += 1;
-
-        if self.sample_counter >= 256 {
-            let mut sum_rms = 0.0_f32;
-            for i in 0..SPECTRUM_BANDS_COUNT {
-                let raw_val = (self.energy_accum[i] / 8.0).min(1.0);
-                // 주파수 틸트 (고음역 가중치 보정)
-                let tilt = 1.0 + (i as f32 / SPECTRUM_BANDS_COUNT as f32) * 1.8;
-                let target = (raw_val * tilt).clamp(0.0, 1.0);
-
-                // 스무딩 & 피크 캡
-                self.spectrum_bars[i] = self.spectrum_bars[i] * 0.7 + target * 0.3;
-                if self.spectrum_bars[i] > self.peak_caps[i] {
-                    self.peak_caps[i] = self.spectrum_bars[i];
-                } else {
-                    self.peak_caps[i] = (self.peak_caps[i] - 0.02).max(0.0);
-                }
-                sum_rms += self.spectrum_bars[i];
-                self.energy_accum[i] = 0.0;
-            }
-            self.rms_level = self.rms_level * 0.7 + (sum_rms / SPECTRUM_BANDS_COUNT as f32) * 0.3;
-            self.sample_counter = 0;
-        }
-    }
-
-    /// UI 프레임마다 호출하여 비활성 시 부드럽게 감쇠(Decay)
-    #[allow(dead_code)]
-    pub fn update_decay(&mut self) {
-        for bar in self.spectrum_bars.iter_mut() {
-            *bar = (*bar * 0.88 - 0.01).max(0.0);
-        }
-        for cap in self.peak_caps.iter_mut() {
-            *cap = (*cap - 0.025).max(0.0);
-        }
-        self.rms_level = (self.rms_level * 0.88 - 0.01).max(0.0);
     }
 }
 
@@ -416,11 +338,10 @@ fn soft_clip(x: f32) -> f32 {
     }
 }
 
-/// rodio Source를 래핑하여 실시간 EQ, 리버브 및 비주얼라이저 버퍼를 처리하는 DSP 스트림
+/// rodio Source를 래핑하여 실시간 EQ, 리버브 등을 처리하는 DSP 스트림
 pub struct DspSource<I> {
     source: I,
     params: Arc<Mutex<DspParams>>,
-    visualizer: Arc<Mutex<VisualizerState>>,
     sample_rate: u32,
     channels: u16,
 
@@ -447,7 +368,6 @@ where
     pub fn new(
         source: I,
         params: Arc<Mutex<DspParams>>,
-        visualizer: Arc<Mutex<VisualizerState>>,
     ) -> Self {
         let sample_rate = source.sample_rate();
         let channels = source.channels();
@@ -478,7 +398,6 @@ where
         Self {
             source,
             params,
-            visualizer,
             sample_rate,
             channels,
             cached_params,
@@ -509,7 +428,7 @@ where
 
         // 64샘플 블록 단위 체크 (초당 ~1,378회): 락 경합 방지 및 CPU 오버헤드 98% 격감
         self.check_counter += 1;
-        if self.check_counter % 64 == 0 {
+        if self.check_counter.is_multiple_of(64) {
             if let Ok(p) = self.params.try_lock() {
                 self.cached_params = p.clone();
             }
@@ -571,13 +490,6 @@ where
         } else {
             0.0
         };
-
-        // 6. 비주얼라이저 버퍼에 첫 번째 채널 샘플 전송
-        if ch == 0 {
-            if let Ok(mut viz) = self.visualizer.try_lock() {
-                viz.push_sample(final_sample);
-            }
-        }
 
         Some(final_sample)
     }

@@ -21,6 +21,7 @@ pub enum AppTab {
     Merge,
 }
 
+#[allow(clippy::enum_variant_names)]
 pub enum WorkerResult {
     ProcessDone(Result<AudioInfo, String>),
     ExtractDone(Result<AudioInfo, String>),

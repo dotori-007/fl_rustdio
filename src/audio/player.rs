@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
-use super::dsp::{DspParams, DspSource, VisualizerState};
+use super::dsp::{DspParams, DspSource};
 
 pub struct AudioPlayer {
     _stream: Option<OutputStream>,
@@ -17,7 +17,6 @@ pub struct AudioPlayer {
     playback_start: Option<Instant>,
     accumulated_time: Duration,
     pub dsp_params: Arc<Mutex<DspParams>>,
-    pub visualizer: Arc<Mutex<VisualizerState>>,
     pub waveform_peaks: Vec<f32>,
 }
 
@@ -48,7 +47,6 @@ impl AudioPlayer {
             playback_start: None,
             accumulated_time: Duration::ZERO,
             dsp_params: Arc::new(Mutex::new(DspParams::default())),
-            visualizer: Arc::new(Mutex::new(VisualizerState::default())),
             waveform_peaks: Vec::new(),
         }
     }
@@ -129,7 +127,7 @@ impl AudioPlayer {
                 let reader = BufReader::with_capacity(256 * 1024, file);
                 let source = Decoder::new(reader).map_err(|e| format!("오디오 디코딩 실패: {e}"))?;
                 let f32_source = source.convert_samples::<f32>();
-                let dsp_source = DspSource::new(f32_source, self.dsp_params.clone(), self.visualizer.clone());
+                let dsp_source = DspSource::new(f32_source, self.dsp_params.clone());
                 sink.append(dsp_source);
 
                 let speed = self.dsp_params.lock().map(|p| p.speed).unwrap_or(1.0);
@@ -239,7 +237,7 @@ impl AudioPlayer {
 
             let skipped = source.skip_duration(target_pos);
             let f32_source = skipped.convert_samples::<f32>();
-            let dsp_source = DspSource::new(f32_source, self.dsp_params.clone(), self.visualizer.clone());
+            let dsp_source = DspSource::new(f32_source, self.dsp_params.clone());
             sink.append(dsp_source);
 
             let speed = self.dsp_params.lock().map(|p| p.speed).unwrap_or(1.0);
@@ -273,7 +271,7 @@ pub fn extract_waveform_peaks(path: &Path, num_peaks: usize) -> Vec<f32> {
         Err(_) => return Vec::new(),
     };
 
-    let mut source = decoder.convert_samples::<f32>();
+    let source = decoder.convert_samples::<f32>();
     let total_dur = source.total_duration().unwrap_or(Duration::from_secs(180));
     let s_rate = source.sample_rate();
     let channels = source.channels();
@@ -285,7 +283,7 @@ pub fn extract_waveform_peaks(path: &Path, num_peaks: usize) -> Vec<f32> {
     let mut current_max = 0.0_f32;
     let mut count = 0;
 
-    while let Some(sample) = source.next() {
+    for sample in source {
         let abs_val = sample.abs();
         if abs_val > current_max {
             current_max = abs_val;

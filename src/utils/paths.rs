@@ -106,7 +106,7 @@ pub fn prune_directory_queue(dir: &std::path::Path, max_items: usize, preserve_p
     if total_count > max_items {
         let remove_count = total_count - max_items;
         // 오래된 순으로 정렬 (가장 오래된 파일이 0번 인덱스)
-        files.sort_by(|a, b| a.1.cmp(&b.1));
+        files.sort_by_key(|a| a.1);
 
         for (path, _) in files.iter().take(remove_count) {
             let _ = std::fs::remove_file(path);

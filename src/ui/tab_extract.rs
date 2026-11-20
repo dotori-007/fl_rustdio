@@ -9,6 +9,7 @@ use super::theme::{
 };
 use super::widgets::render_audio_player;
 
+#[derive(Default)]
 pub struct ExtractTabState {
     pub url_input: String,
     pub is_extracting: bool,
@@ -16,19 +17,6 @@ pub struct ExtractTabState {
     pub error_message: Option<String>,
     pub extracted_info: Option<AudioInfo>,
     pub player: AudioPlayer,
-}
-
-impl Default for ExtractTabState {
-    fn default() -> Self {
-        Self {
-            url_input: String::new(),
-            is_extracting: false,
-            status_message: None,
-            error_message: None,
-            extracted_info: None,
-            player: AudioPlayer::new(),
-        }
-    }
 }
 
 #[allow(dead_code)]
